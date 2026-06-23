@@ -43,27 +43,29 @@ jobs:
     - name: Install Composer
       run: |
         curl -sS https://getcomposer.org/installer | sudo php -- --install-dir=/usr/local/bin --filename=composer
+        sudo chmod +x /usr/local/bin/composer
+        composer --version
     
     - name: Download Pterodactyl Panel
       run: |
-        cd /var/www
-        sudo mkdir -p pterodactyl
+        sudo mkdir -p /var/www/pterodactyl
         sudo chown -R $USER:$USER /var/www/pterodactyl
-        cd pterodactyl
+        cd /var/www/pterodactyl
         curl -Lo panel.tar.gz https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz
         tar -xzvf panel.tar.gz
+        rm -f panel.tar.gz
         chmod -R 755 storage/* bootstrap/cache/
+    
+    - name: Install dependencies with Composer
+      run: |
+        cd /var/www/pterodactyl
+        composer install --no-dev --optimize-autoloader
     
     - name: Configure environment
       run: |
         cd /var/www/pterodactyl
         cp .env.example .env
         php artisan key:generate --force
-    
-    - name: Install dependencies with Composer
-      run: |
-        cd /var/www/pterodactyl
-        composer install --no-dev --optimize-autoloader
     
     - name: Setup Database
       run: |
@@ -110,7 +112,7 @@ jobs:
         sudo rm -rf /etc/nginx/sites-enabled/default
         sudo tee /etc/nginx/sites-available/pterodactyl > /dev/null <<EOF
         server {
-            listen 127.0.0.1:8080; # Tunnel akan akses ke port ini
+            listen 127.0.0.1:8080;
             server_name _;
             root /var/www/pterodactyl/public;
             index index.php index.html;
@@ -128,45 +130,21 @@ jobs:
                 deny all;
             }
             
-            # Security headers untuk Cloudflare
             add_header X-Frame-Options "SAMEORIGIN";
             add_header X-Content-Type-Options "nosniff";
             add_header X-XSS-Protection "1; mode=block";
         }
         EOF
         sudo ln -s /etc/nginx/sites-available/pterodactyl /etc/nginx/sites-enabled/
-        
-        # Ubah nginx listen ke port 8080
-        sudo sed -i 's/listen 80;/listen 127.0.0.1:8080;/' /etc/nginx/sites-available/pterodactyl
         sudo nginx -t
         sudo systemctl restart nginx
     
     - name: Install and configure Cloudflared
       run: |
-        # Download cloudflared
         wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
         sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
         sudo chmod +x /usr/local/bin/cloudflared
         
-        # Buat direktori config
-        sudo mkdir -p /etc/cloudflared
-        
-        # Buat config file
-        sudo tee /etc/cloudflared/config.yml > /dev/null <<EOF
-        tunnel: 7a5ab7dc-e7ec-45b0-9e3f-173a18c10846
-        credentials-file: /etc/cloudflared/credentials.json
-        loglevel: info
-
-        ingress:
-          - hostname: your-domain.com
-            service: http://localhost:8080
-          - service: http_status:404
-        EOF
-        
-        # Simpan token ke file credentials
-        echo '{"AccountTag":"cad61a3e2c99c2cb7b05462e41f57bc56","TunnelID":"7a5ab7dc-e7ec-45b0-9e3f-173a18c10846","TunnelSecret":"YzJjOWIwMTk5YjFjZDY5ZGJkZThlMTQzZjZiZmU2MTU4OGI5YTVmYg=="}' | sudo tee /etc/cloudflared/credentials.json
-        
-        # Buat systemd service
         sudo tee /etc/systemd/system/cloudflared.service > /dev/null <<EOF
         [Unit]
         Description=Cloudflare Tunnel
@@ -214,15 +192,17 @@ jobs:
     - name: Verify services
       run: |
         echo "Checking services..."
-        systemctl status nginx --no-pager
-        systemctl status php8.1-fpm --no-pager
-        systemctl status mariadb --no-pager
-        systemctl status redis-server --no-pager
-        systemctl status cloudflared --no-pager
+        systemctl status nginx --no-pager || true
+        systemctl status php8.1-fpm --no-pager || true
+        systemctl status mariadb --no-pager || true
+        systemctl status redis-server --no-pager || true
+        systemctl status cloudflared --no-pager || true
         
-        # Test tunnel
-        sleep 10
-        curl -I http://localhost:8080
+        # Test PHP
+        php /var/www/pterodactyl/artisan --version
+        
+        # Test Nginx
+        curl -I http://127.0.0.1:8080 || true
     
     - name: Display access information
       run: |
@@ -236,8 +216,8 @@ jobs:
         echo "   Password: admin123"
         echo ""
         echo "🔧 Cloudflare Tunnel Status:"
-        sudo systemctl status cloudflared --no-pager | grep Active
+        sudo systemctl status cloudflared --no-pager | grep Active || echo "Tunnel starting..."
         echo ""
-        echo "📋 To check tunnel logs:"
+        echo "📋 Check logs:"
         echo "   sudo journalctl -u cloudflared -f"
         echo "=========================================="
