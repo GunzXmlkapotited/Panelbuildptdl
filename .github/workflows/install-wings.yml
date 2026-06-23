@@ -1,0 +1,123 @@
+name: Install Pterodactyl Wings
+
+on:
+  workflow_dispatch:  # Manual trigger saja
+
+jobs:
+  install-wings:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Update system
+      run: |
+        sudo apt update
+        sudo apt upgrade -y
+    
+    - name: Install Docker and dependencies
+      run: |
+        sudo apt install -y curl wget git \
+          software-properties-common \
+          apt-transport-https ca-certificates gnupg lsb-release
+        
+        # Install Docker
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        sudo apt update
+        sudo apt install -y docker-ce docker-ce-cli containerd.io
+        
+        # Install Docker Compose
+        sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        sudo chmod +x /usr/local/bin/docker-compose
+        
+        sudo systemctl enable docker
+        sudo systemctl start docker
+    
+    - name: Create Wings directory
+      run: |
+        sudo mkdir -p /etc/pterodactyl
+        sudo mkdir -p /var/lib/pterodactyl/volumes
+    
+    - name: Download Wings
+      run: |
+        cd /usr/local/bin
+        sudo curl -L -o wings "https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_$([[ "$(uname -m)" == "x86_64" ]] && echo "amd64" || echo "arm64")"
+        sudo chmod u+x wings
+    
+    - name: Create Wings config
+      run: |
+        sudo tee /etc/pterodactyl/config.yml > /dev/null <<EOF
+        debug: false
+        uuid: ${{ secrets.WINGS_UUID }}
+        token_id: ${{ secrets.WINGS_TOKEN_ID }}
+        token: ${{ secrets.WINGS_TOKEN }}
+        api:
+          host: 0.0.0.0
+          port: 8080
+          ssl:
+            enabled: false
+        system:
+          data: /var/lib/pterodactyl/volumes
+          sftp:
+            bind-port: 2022
+        remote: 'https://your-panel-domain.com'  # Ganti pakai domain panel
+        allowed_mounts: []
+        docker:
+          network: pterodactyl_nw
+          domainname: ''
+          registry: {}
+        throttle:
+          enabled: true
+          period: 60
+          requests: 1000
+        EOF
+    
+    - name: Setup Wings systemd service
+      run: |
+        sudo tee /etc/systemd/system/wings.service > /dev/null <<EOF
+        [Unit]
+        Description=Pterodactyl Wings Daemon
+        After=docker.service
+        Requires=docker.service
+        PartOf=docker.service
+
+        [Service]
+        User=root
+        WorkingDirectory=/etc/pterodactyl
+        ExecStart=/usr/local/bin/wings
+        Restart=on-failure
+        RestartSec=5
+        StartLimitInterval=600
+
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+        
+        sudo systemctl daemon-reload
+        sudo systemctl enable wings
+    
+    - name: Create system user
+      run: |
+        sudo useradd -r -d /var/lib/pterodactyl -s /usr/sbin/nologin pterodactyl || true
+        sudo usermod -aG docker pterodactyl
+    
+    - name: Configure UFW firewall
+      run: |
+        sudo ufw allow 22/tcp
+        sudo ufw allow 8080/tcp   # Wings API
+        sudo ufw allow 2022/tcp   # SFTP
+        sudo ufw allow 25565/tcp  # Minecraft (ubah sesuai port yang dipakai)
+        sudo ufw allow 25565/udp  # UDP untuk game
+        sudo ufw --force enable
+    
+    - name: Start Wings
+      run: |
+        sudo systemctl start wings
+        sleep 10
+        sudo systemctl status wings --no-pager
+    
+    - name: Verify installation
+      run: |
+        docker --version
+        docker-compose --version
+        /usr/local/bin/wings --version
+        curl -I http://localhost:8080
